@@ -1,111 +1,281 @@
-# MCP Chat
+# MCP Chat — Document Read/Write Tool
 
-MCP Chat is a command-line interface application that enables interactive chat capabilities with AI models through the Anthropic API. The application supports document retrieval, command-based prompts, and extensible tool integrations via the MCP (Model Context Protocol) architecture.
+A command-line chat app that talks to Claude through the Anthropic API and uses the
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io) to give the model access
+to a small set of documents. The MCP server exposes **tools** (read and edit a document),
+**resources** (list and fetch documents) and **prompts** (reusable commands such as `/format`).
 
-## Prerequisites
+## Table of contents
 
-- Python 3.10+
-- Anthropic API Key
+- [Architecture](#architecture)
+- [MCP server capabilities](#mcp-server-capabilities)
+  - [Tools](#tools)
+  - [Resources](#resources)
+  - [Prompts](#prompts)
+- [Setup](#setup)
+- [Running](#running)
+  - [Interactive chat](#interactive-chat)
+  - [Client smoke test](#client-smoke-test)
+  - [MCP Inspector](#mcp-inspector)
+- [Demos](#demos)
+- [Project structure](#project-structure)
+- [Development](#development)
+
+## Architecture
+
+`main.py` starts the CLI, which spawns `mcp_server.py` as a child process and talks to it
+over **stdio**. Claude never calls the server directly: the chat loop asks Claude for a
+response, and when Claude requests a tool, `ToolManager` routes the call to the right
+`MCPClient` and sends the result back to Claude.
+
+```mermaid
+flowchart LR
+    User([User]) -->|types query| CLI
+
+    subgraph App["Host application (main.py)"]
+        CLI["CliApp<br/>core/cli.py<br/>prompt_toolkit UI, @ and / autocomplete"]
+        Chat["CliChat / Chat<br/>core/cli_chat.py, core/chat.py<br/>conversation loop"]
+        Tools["ToolManager<br/>core/tools.py"]
+        Claude["Claude<br/>core/claude.py"]
+        Client["MCPClient<br/>mcp_client.py"]
+
+        CLI --> Chat
+        Chat --> Claude
+        Chat --> Tools
+        Tools --> Client
+        Chat -->|resources and prompts| Client
+    end
+
+    Claude <-->|Messages API| Anthropic[(Anthropic API)]
+    Client <-->|JSON-RPC over stdio| Server
+
+    subgraph Server["MCP server (mcp_server.py · FastMCP 'DocumentMCP')"]
+        T["Tools<br/>read_doc_contents<br/>edit_document"]
+        R["Resources<br/>docs://documents<br/>docs://documents/{doc_id}"]
+        P["Prompts<br/>format"]
+        D[("In-memory docs dict")]
+        T --> D
+        R --> D
+    end
+```
+
+### Request flow
+
+How a single query moves through the system, including the `@mention` resource lookup and a tool call:
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant CLI as CliApp
+    participant Chat as CliChat
+    participant MC as MCPClient
+    participant S as MCP server
+    participant C as Claude (Anthropic API)
+
+    U->>CLI: "Summarize @report.pdf"
+    CLI->>Chat: run(query)
+    Chat->>MC: read_resource("docs://documents")
+    MC->>S: resources/read
+    S-->>Chat: ["deposition.md", "report.pdf", ...]
+    Chat->>MC: read_resource("docs://documents/report.pdf")
+    MC->>S: resources/read
+    S-->>Chat: document text
+    Chat->>C: messages + <document> context + tool list
+    alt Claude requests a tool
+        C-->>Chat: stop_reason = tool_use
+        Chat->>MC: call_tool("edit_document", {...})
+        MC->>S: tools/call
+        S-->>Chat: tool result
+        Chat->>C: tool_result
+    end
+    C-->>Chat: final answer
+    Chat-->>CLI: response text
+    CLI-->>U: printed answer
+```
+
+## MCP server capabilities
+
+The server lives in [`mcp_server.py`](mcp_server.py) and keeps documents in an in-memory
+dictionary, so **edits are lost when the server restarts**. Available document IDs:
+
+| Document ID       | Content summary                                     |
+| ----------------- | --------------------------------------------------- |
+| `deposition.md`   | Testimony of Angela Smith, P.E.                     |
+| `report.pdf`      | State of a 20m condenser tower                      |
+| `financials.docx` | Project budget and expenditures                     |
+| `outlook.pdf`     | Projected future performance of the system          |
+| `plan.md`         | Steps for the project's implementation              |
+| `spec.txt`        | Technical requirements for the equipment            |
+
+### Tools
+
+Tools are functions the **model** decides to call.
+
+| Name                | Description                                                         | Arguments                                                                                                 |
+| ------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `read_doc_contents` | Reads a document and returns its contents as a string.              | `doc_id` *(string, required)*: ID of the document to read.                                               |
+| `edit_document`     | Edits a document by replacing a string in its content with another. | `doc_id` *(string, required)*: document to edit<br>`old_str` *(string, required)*: exact text to replace, including whitespace<br>`new_str` *(string, required)*: replacement text |
+
+Both tools raise `Doc with id <doc_id> not found` when the ID doesn't exist.
+`edit_document` replaces **every** occurrence of `old_str`.
+
+### Resources
+
+Resources are read-only data the **application** fetches to give the model context.
+
+| URI                         | MIME type          | Returns                                      |
+| --------------------------- | ------------------ | -------------------------------------------- |
+| `docs://documents`          | `application/json` | A list of all document IDs.                  |
+| `docs://documents/{doc_id}` | `text/plain`       | The contents of a single document (template). |
+
+In the chat, typing `@` lists the documents from `docs://documents`. Mentioning a document
+(for example `@report.pdf`) makes the client fetch `docs://documents/report.pdf` and put the
+content into the prompt, so Claude doesn't need to call a tool to read it.
+
+### Prompts
+
+Prompts are reusable message templates the **user** triggers as slash commands.
+
+| Name     | Description                                              | Arguments                                         |
+| -------- | -------------------------------------------------------- | ------------------------------------------------- |
+| `format` | Rewrites the contents of a document in Markdown format. | `doc_id` *(string, required)*: document to format. |
+
+Usage in the chat:
+
+```
+> /format plan.md
+```
+
+The prompt tells Claude to restructure the document with headers, bullet points and tables,
+and to save the result with the `edit_document` tool.
 
 ## Setup
 
-### Step 1: Configure the environment variables
+### Prerequisites
 
-1. Create or edit the `.env` file in the project root and verify that the following variables are set correctly:
+- Python 3.10+
+- [uv](https://github.com/astral-sh/uv) (recommended)
+- An Anthropic API key
+- Node.js with `npx` (only for the MCP Inspector)
 
+### Environment variables
+
+Create a `.env` file in the project root:
+
+```env
+ANTHROPIC_API_KEY="your-api-key"
+CLAUDE_MODEL="claude-sonnet-5-5"
+USE_UV=1
 ```
-ANTHROPIC_API_KEY=""  # Enter your Anthropic API secret key
-```
 
-### Step 2: Install dependencies
+| Variable            | Required | Description                                                                         |
+| ------------------- | -------- | ----------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY` | yes      | Your Anthropic API secret key.                                                     |
+| `CLAUDE_MODEL`      | yes      | Claude model ID used by the chat.                                                  |
+| `USE_UV`            | no       | `1` starts the server with `uv run mcp_server.py`; `0` (default) uses `python`. |
 
-#### Option 1: Setup with uv (Recommended)
-
-[uv](https://github.com/astral-sh/uv) is a fast Python package installer and resolver.
-
-1. Install uv, if not already installed:
+### Install dependencies
 
 ```bash
-pip install uv
+uv sync
 ```
 
-2. Create and activate a virtual environment:
+Without uv:
 
 ```bash
-uv venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install "anthropic<1" python-dotenv prompt-toolkit "mcp[cli]>=1.8.0,<2"
 ```
 
-3. Install dependencies:
+Set `USE_UV=0` in `.env` when you're not using uv.
 
-```bash
-uv pip install -e .
-```
+## Running
 
-4. Run the project
+### Interactive chat
 
 ```bash
 uv run main.py
 ```
 
-#### Option 2: Setup without uv
+The CLI starts the MCP server for you. Inside the chat:
 
-1. Create and activate a virtual environment:
+| Input                       | What it does                                              |
+| --------------------------- | --------------------------------------------------------- |
+| Plain text                  | Chat with Claude.                                         |
+| `@<doc_id>`                 | Adds that document's content to the query (resource).     |
+| `/<prompt> <doc_id>`        | Runs a server prompt, for example `/format plan.md`.     |
+| `Tab`                       | Autocompletes document IDs and commands.                  |
 
-```bash
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-2. Install dependencies, and set `USE_UV=0` in the `.env` file:
-
-```bash
-pip install "anthropic<1" python-dotenv prompt-toolkit "mcp[cli]>=1.8.0,<2"
-```
-
-3. Run the project
+Extra MCP servers can be passed as arguments. Each one is started with `uv run <script>`
+and its tools become available to Claude:
 
 ```bash
-python main.py
+uv run main.py other_server.py
 ```
 
-## Usage
+### Client smoke test
 
-### Basic Interaction
+Checks that the client can start the server and list its tools, without calling Claude:
 
-Simply type your message and press Enter to chat with the model.
-
-### Document Retrieval
-
-Use the @ symbol followed by a document ID to include document content in your query:
-
-```
-> Tell me about @deposition.md
+```bash
+uv run mcp_client.py
 ```
 
-### Commands
+### MCP Inspector
 
-Use the / prefix to execute commands defined in the MCP server:
+The [MCP Inspector](https://github.com/modelcontextprotocol/inspector) is a web UI for
+calling the server's tools, resources and prompts by hand. Run it against the **server**
+file, not `main.py`:
+
+```bash
+uv run mcp dev mcp_server.py
+```
+
+Then:
+
+1. Open the URL printed in the terminal (usually `http://localhost:6274`).
+2. Click **Connect**.
+3. Use the **Tools**, **Resources** and **Prompts** tabs to list items and run them with your own arguments.
+
+> `uv run mcp main.py` fails with `No such command 'main.py'`, because the `mcp` CLI
+> expects a subcommand (`dev`, `run`, `install`). Use `uv run main.py` for the chat and
+> `uv run mcp dev mcp_server.py` for the inspector.
+
+## Demos
+
+### Resources: mentioning documents with `@`
+
+<!-- Replace with the uploaded video URL -->
+https://github.com/user-attachments/assets/RESOURCE_VIDEO_ID
+
+### Prompts: formatting a document with `/format`
+
+<!-- Replace with the uploaded video URL -->
+https://github.com/user-attachments/assets/PROMPT_FORMAT_VIDEO_ID
+
+## Project structure
 
 ```
-> /summarize deposition.md
+.
+├── main.py            # Entry point: loads .env, starts MCP clients and the CLI
+├── mcp_server.py      # MCP server: tools, resources and prompts (FastMCP)
+├── mcp_client.py      # MCPClient: stdio connection, tools, prompts, resources
+├── core/
+│   ├── cli.py         # prompt_toolkit UI, autocomplete for @ and /
+│   ├── cli_chat.py    # Resource mentions, slash commands, prompt conversion
+│   ├── chat.py        # Base chat loop with the tool-use cycle
+│   ├── claude.py      # Anthropic API wrapper
+│   └── tools.py       # ToolManager: collects tools and routes tool calls
+├── pyproject.toml
+└── .env               # Not committed
 ```
-
-Commands will auto-complete when you press Tab.
 
 ## Development
 
-### Adding New Documents
-
-Edit the `mcp_server.py` file to add new documents to the `docs` dictionary.
-
-### Implementing MCP Features
-
-To fully implement the MCP features:
-
-1. Complete the TODOs in `mcp_server.py`
-2. Implement the missing functionality in `mcp_client.py`
-
-### Linting and Typing Check
-
-There are no lint or type checks implemented.
+- **Add documents:** edit the `docs` dictionary in `mcp_server.py`.
+- **Add a tool, resource or prompt:** decorate a function with `@mcp.tool`,
+  `@mcp.resource` or `@mcp.prompt` in `mcp_server.py`. Prompts appear as `/` commands in
+  the chat automatically.
+- **Planned:** a `summarize` prompt (see the TODO in `mcp_server.py`).
+- There are no lint or type checks configured.
