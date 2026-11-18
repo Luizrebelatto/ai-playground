@@ -246,13 +246,19 @@ Then:
 
 ### Resources: mentioning documents with `@`
 
-<!-- Replace with the uploaded video URL -->
-https://github.com/user-attachments/assets/RESOURCE_VIDEO_ID
+
+
+https://github.com/user-attachments/assets/f0343696-fde6-4cf9-8ad0-2cb2211f15a9
+
+
 
 ### Prompts: formatting a document with `/format`
 
-<!-- Replace with the uploaded video URL -->
-https://github.com/user-attachments/assets/PROMPT_FORMAT_VIDEO_ID
+
+
+https://github.com/user-attachments/assets/52976ef5-1688-486c-9a4a-b20b341d874c
+
+
 
 ## Project structure
 
