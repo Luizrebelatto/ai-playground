@@ -656,10 +656,14 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fastmcp", extra = ["tasks"] },
+    { name = "httpx2" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "fastmcp", extras = ["tasks"], specifier = ">=4.2.1" }]
+requires-dist = [
+    { name = "fastmcp", extras = ["tasks"], specifier = ">=4.2.1" },
+    { name = "httpx2", specifier = ">=2.16.2" },
+]
 
 [[package]]
 name = "mcp-types"
