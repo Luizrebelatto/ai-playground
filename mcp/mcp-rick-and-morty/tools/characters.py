@@ -40,6 +40,7 @@ async def get_multiple_characters(character_ids: list[int]) -> list[dict]:
         "Results are paginated (20 per page)."
     ),
 )
+
 async def get_characters_by_filters(
     name: str | None = None,
     status: Literal["alive", "dead", "unknown"] | None = None,
