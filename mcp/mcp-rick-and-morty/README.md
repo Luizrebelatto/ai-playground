@@ -5,6 +5,16 @@ An MCP server that exposes the [Rick and Morty API](https://rickandmortyapi.com/
 ## Tools
 <img width="1046" height="452" alt="Screenshot 2026-11-21 at 16 26 46" src="https://github.com/user-attachments/assets/d9107b8a-1ce7-419e-8ba2-c60f383b122e" />
 
+## How to run inspector
+```bash
+uv sync
+uv run fastmcp dev inspector my_server.py --project .
+```
+1. Open the link printed in the terminal, including the token: `http://127.0.0.1:6274?MCP_INSPECTOR_API_TOKEN=...`
+2. Click **Connect**.
+3. Open the **Tools** tab and click **List Tools**. The 12 tools show up.
+4. Pick a tool, fill in its parameters (for example `get_characters_by_filters` with `name = rick` and `status = alive`) and click **Run Tool**.
+
 ## What happens when you ask "How many alive Ricks are there?
 ```mermaid
 sequenceDiagram
