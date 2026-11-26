@@ -4,7 +4,7 @@ import type { GraphState } from '../state.ts';
 
 export function intentNode(openRouterService: OpenRouterService) {
     return async (state: GraphState): Promise<Partial<GraphState>> => {
-        console.log('🧠 Intent node processing...');
+        console.log('Intent node processing...');
         try {
             const rawQuestion = state.messages.at(-1)!.text as string;
 
